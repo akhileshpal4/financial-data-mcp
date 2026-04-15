@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "financial-data-mcp"
+version = "1.0.0"
+description = "MCP server for deep Indian stock analysis — NSE, BSE, Screener.in, Tickertape, Moneycontrol"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["mcp", "nse", "bse", "stock", "india", "finance", "screener"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "mcp>=1.0.0",
+  "httpx>=0.27.0",
+  "beautifulsoup4>=4.12.0",
+  "lxml>=5.2.0",
+  "python-dateutil>=2.9.0",
+  "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+financial-data-mcp = "server:main_sync"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fetchers*", "utils*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json"]

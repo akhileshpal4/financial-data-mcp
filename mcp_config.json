@@ -1,0 +1,28 @@
+{
+  "_comment": "Option A — if you installed via pip (pip install financial-data-mcp)",
+  "mcpServers": {
+    "financial-data": {
+      "command": "financial-data-mcp",
+      "args": [],
+      "env": {}
+    }
+  },
+
+  "_comment_B": "Option B — if you cloned the repo and run directly",
+  "mcpServers_cloned": {
+    "financial-data": {
+      "command": "python",
+      "args": ["/absolute/path/to/FinancialData/server.py"],
+      "env": {}
+    }
+  },
+
+  "_comment_C": "Option C — use uvx (no install needed, works anywhere)",
+  "mcpServers_uvx": {
+    "financial-data": {
+      "command": "uvx",
+      "args": ["financial-data-mcp"],
+      "env": {}
+    }
+  }
+}
