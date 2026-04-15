@@ -574,7 +574,7 @@ async def _balance_sheet_health(symbol: str, consolidated: bool) -> dict[str, An
     scr_rat = scr_rat if isinstance(scr_rat, dict) else {}
 
     headers = scr_bs.get("__headers__", [])
-    borrowings = scr_bs.get("Borrowings") or scr_bs.get("Total Debt") or []
+    borrowings = scr_bs.get("Borrowings") or scr_bs.get("Borrowing") or scr_bs.get("Total Debt") or []
     # Net Worth = Equity Capital + Reserves (Screener splits them)
     equity_cap = scr_bs.get("Equity Capital") or []
     reserves = scr_bs.get("Reserves") or []
@@ -592,8 +592,11 @@ async def _balance_sheet_health(symbol: str, consolidated: bool) -> dict[str, An
         name="D/E",
     )
 
-    # ICR
-    ebit = scr_pl.get("Operating Profit") or scr_pl.get("EBIT") or []
+    # ICR — for banks use Financing Profit; for others use Operating Profit
+    ebit = (
+        scr_pl.get("Operating Profit") or scr_pl.get("EBIT") or
+        scr_pl.get("Financing Profit") or []
+    )
     interest = scr_pl.get("Interest") or scr_pl.get("Finance Costs") or []
     icr = None
     if ebit and interest:

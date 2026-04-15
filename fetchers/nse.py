@@ -22,7 +22,7 @@ HEADERS = {
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",
     "Referer": "https://www.nseindia.com/",
     "Connection": "keep-alive",
     "DNT": "1",
@@ -76,6 +76,9 @@ class NSEFetcher:
                 logger.debug("NSE GET %s attempt %d failed: %s", url, attempt + 1, exc)
                 if attempt < retries - 1:
                     await asyncio.sleep(1.5 ** attempt)
+            except Exception as exc:
+                logger.debug("NSE GET %s parse error: %s", url, exc)
+                return None
         return None
 
     # ------------------------------------------------------------------ #

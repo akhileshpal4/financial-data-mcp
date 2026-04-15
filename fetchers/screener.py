@@ -144,6 +144,14 @@ class ScreenerFetcher:
         }
         for key, pat in patterns.items():
             ratios[key] = self._get_ratio_value(soup, pat)
+
+        # Derive P/B from CMP / Book Value when not directly available
+        if not ratios.get("pb") and ratios.get("cmp") and ratios.get("book_value"):
+            try:
+                ratios["pb"] = round(ratios["cmp"] / ratios["book_value"], 2)
+            except (TypeError, ZeroDivisionError):
+                pass
+
         return ratios
 
     async def get_profit_loss(self, symbol: str, consolidated: bool = True) -> dict[str, list] | None:
@@ -210,23 +218,41 @@ class ScreenerFetcher:
         return result if len(result) > 2 else None
 
     async def get_peers(self, symbol: str) -> list[dict] | None:
-        """Peer companies listed on the Screener page with key metrics."""
+        """Peer companies via Screener's lazy-loaded peers API."""
+        import re as _re
+
         soup = await self._fetch_page(symbol, consolidated=True)
         if soup is None:
             return None
 
-        peers = []
-        peer_section = soup.select_one(
-            "#peers table, section#peers table, .peer-companies table"
-        )
-        if not peer_section:
+        # Extract warehouseId from page HTML (present in /alerts/stock-{id}/ data-url)
+        html = str(soup)
+        m = _re.search(r"/alerts/stock-(\d+)/", html)
+        if not m:
+            m = _re.search(r"warehouseId[^\d]*(\d+)", html)
+        if not m:
+            return None
+        warehouse_id = m.group(1)
+
+        url = f"{BASE_URL}/api/company/{warehouse_id}/peers/"
+        try:
+            resp = await self._client.get(url)
+            resp.raise_for_status()
+            peer_soup = BeautifulSoup(resp.text, "lxml")
+        except Exception as exc:
+            logger.debug("Screener peers API failed for %s: %s", symbol, exc)
             return None
 
-        headers = [
-            th.get_text(strip=True)
-            for th in peer_section.select("thead th")
-        ]
-        for row in peer_section.select("tbody tr")[:6]:
+        table = peer_soup.find("table")
+        if not table:
+            return None
+
+        # First <tr> is the header row
+        header_row = table.find("tr")
+        headers = [th.get_text(strip=True) for th in header_row.find_all(["th", "td"])] if header_row else []
+
+        peers: list[dict] = []
+        for row in table.find_all("tr")[1:7]:
             cells = row.find_all(["th", "td"])
             if not cells:
                 continue
@@ -234,7 +260,8 @@ class ScreenerFetcher:
             for i, cell in enumerate(cells):
                 key = headers[i] if i < len(headers) else f"col_{i}"
                 val = cell.get_text(strip=True)
-                peer[key] = _to_float(val) if i > 0 else val
+                # First two columns (S.No., Name) are text; rest are numeric
+                peer[key] = val if i < 2 else _to_float(val)
             if peer:
                 peers.append(peer)
         return peers[:6] if peers else None
