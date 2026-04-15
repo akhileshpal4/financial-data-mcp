@@ -57,7 +57,7 @@ def _parse_table(table_el) -> dict[str, list]:
         cells = row.find_all(["th", "td"])
         if not cells:
             continue
-        label = cells[0].get_text(strip=True)
+        label = cells[0].get_text(strip=True).rstrip(" +").rstrip(" -").strip()
         values = [_to_float(c.get_text(strip=True)) for c in cells[1:]]
         if label:
             data[label] = values

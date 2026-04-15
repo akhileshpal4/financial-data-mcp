@@ -362,7 +362,7 @@ async def _valuation_metrics(symbol: str, consolidated: bool) -> dict[str, Any]:
         nse_q.get("symbol_pe"), scr_ratios.get("pe"), tt_info.get("pe"), name="PE"
     )
     pb = _cc.reconcile_ratio(
-        bse_q_val := None, scr_ratios.get("pb"), tt_info.get("pb"), name="PB"
+        scr_ratios.get("pb"), tt_info.get("pb"), name="PB"
     )
     # 5-year historical P/E from ratios table
     pe_history = scr_ratios_tbl.get("Price to Earning") or scr_ratios_tbl.get("P/E")
@@ -397,10 +397,10 @@ async def _growth_metrics(symbol: str, consolidated: bool) -> dict[str, Any]:
     scr_pl = scr_pl if isinstance(scr_pl, dict) else {}
     tt_fin = tt_fin if isinstance(tt_fin, dict) else {}
 
-    # Screener P&L keys vary; try common labels
+    # Screener P&L keys — after stripping trailing " +" in _parse_table
     rev = (
-        scr_pl.get("Sales") or scr_pl.get("Revenue") or
-        scr_pl.get("Total Revenue") or []
+        scr_pl.get("Sales") or scr_pl.get("Revenue from Operations") or
+        scr_pl.get("Revenue") or scr_pl.get("Total Revenue") or []
     )
     np_ = (
         scr_pl.get("Net Profit") or scr_pl.get("Profit after tax") or
@@ -458,9 +458,10 @@ async def _profitability_trends(symbol: str, consolidated: bool) -> dict[str, An
 
     headers = scr_pl.get("__headers__", [])
     rev = (
-        scr_pl.get("Sales") or scr_pl.get("Revenue") or
-        scr_pl.get("Total Revenue") or []
+        scr_pl.get("Sales") or scr_pl.get("Revenue from Operations") or
+        scr_pl.get("Revenue") or scr_pl.get("Total Revenue") or []
     )
+    # OPM % is the EBITDA/operating margin on Screener
     ebitda = (
         scr_pl.get("OPM %") or scr_pl.get("EBITDA %") or
         scr_pl.get("Operating Profit Margin %") or []
@@ -505,7 +506,10 @@ async def _quarterly_performance(symbol: str) -> dict[str, Any]:
 
     headers = scr_q.get("__headers__", [])
     eps_vals = scr_q.get("EPS in Rs") or scr_q.get("Diluted EPS") or scr_q.get("EPS") or []
-    rev_vals = scr_q.get("Sales") or scr_q.get("Revenue") or []
+    rev_vals = (
+        scr_q.get("Sales") or scr_q.get("Revenue from Operations") or
+        scr_q.get("Revenue") or []
+    )
     np_vals = scr_q.get("Net Profit") or []
 
     eps_with_yoy = _calc.eps_yoy_series(
@@ -537,21 +541,21 @@ async def _cashflow_data(symbol: str, consolidated: bool) -> dict[str, Any]:
         scr_cf.get("Operating Activities") or
         scr_cf.get("Net Cash from Operating Activities") or []
     )
-    capex = (
-        scr_cf.get("Fixed Assets Purchased") or
-        scr_cf.get("Capital Expenditure") or
-        scr_cf.get("Cash from Investing Activity") or []
+    investing_cf = (
+        scr_cf.get("Cash from Investing Activity") or
+        scr_cf.get("Cash from Investing Activities") or []
     )
-
-    fcf_scr = _calc.free_cash_flow_series(ocf, capex)
+    # Screener provides Free Cash Flow directly — use it; fall back to derived
+    fcf_direct = scr_cf.get("Free Cash Flow") or []
+    fcf_scr = fcf_direct if fcf_direct else _calc.free_cash_flow_series(ocf, investing_cf)
     tt_fcf = tt_fin.get("free_cf", [])
 
     return {
         "symbol": symbol,
         "headers": headers[-5:],
         "operating_cashflow": ocf[-5:],
-        "capex": capex[-5:],
-        "free_cashflow_screener": fcf_scr[-5:],
+        "investing_cashflow": investing_cf[-5:],
+        "free_cashflow": fcf_scr[-5:],
         "free_cashflow_tickertape": tt_fcf[-5:] if tt_fcf else [],
         "avg_fcf_3y": _calc.avg(fcf_scr, last_n=3),
         "avg_fcf_5y": _calc.avg(fcf_scr, last_n=5),
@@ -571,7 +575,13 @@ async def _balance_sheet_health(symbol: str, consolidated: bool) -> dict[str, An
 
     headers = scr_bs.get("__headers__", [])
     borrowings = scr_bs.get("Borrowings") or scr_bs.get("Total Debt") or []
-    net_worth = scr_bs.get("Equity Capital") or scr_bs.get("Net Worth") or scr_bs.get("Total Equity") or []
+    # Net Worth = Equity Capital + Reserves (Screener splits them)
+    equity_cap = scr_bs.get("Equity Capital") or []
+    reserves = scr_bs.get("Reserves") or []
+    if equity_cap and reserves and len(equity_cap) == len(reserves):
+        net_worth = [round((e or 0) + (r or 0), 2) for e, r in zip(equity_cap, reserves)]
+    else:
+        net_worth = scr_bs.get("Net Worth") or scr_bs.get("Total Equity") or equity_cap or []
     de_trend = _calc.de_ratio_series(borrowings, net_worth)
 
     # D/E from ratios table (cross-check)
@@ -616,11 +626,15 @@ async def _return_ratios(symbol: str, consolidated: bool) -> dict[str, Any]:
     tt_info = tt_info if isinstance(tt_info, dict) else {}
 
     headers = scr_rat.get("__headers__", [])
+    # Screener ratios table has ROCE % but not ROE — fetch key_ratios for ROE
+    scr_key = await screener().get_key_ratios(symbol, consolidated)
+    scr_key = scr_key if isinstance(scr_key, dict) else {}
+
     roe_series = scr_rat.get("ROE %") or scr_rat.get("Return on Equity") or scr_rat.get("ROE") or []
     roce_series = scr_rat.get("ROCE %") or scr_rat.get("Return on Capital Employed") or scr_rat.get("ROCE") or []
 
-    roe_current = roe_series[-1] if roe_series else tt_info.get("roe")
-    roce_current = roce_series[-1] if roce_series else tt_info.get("roce")
+    roe_current = roe_series[-1] if roe_series else scr_key.get("roe") or tt_info.get("roe")
+    roce_current = roce_series[-1] if roce_series else scr_key.get("roce") or tt_info.get("roce")
 
     roe_xchk = _cc.reconcile_ratio(roe_current, tt_info.get("roe"), name="ROE")
     roce_xchk = _cc.reconcile_ratio(roce_current, tt_info.get("roce"), name="ROCE")
@@ -690,11 +704,34 @@ async def _shareholding_pattern(symbol: str) -> dict[str, Any]:
     records = nse_sh if nse_sh else tt_sh
     trend = _cc.build_shareholding_trend(records)
 
-    # Screener tables as supplementary
+    # Screener shareholding table labels (after + stripping)
     sh_headers = scr_sh.get("__headers__", [])
-    promoter_scr = scr_sh.get("Promoters") or scr_sh.get("Promoter & Promoter Group") or []
-    fii_scr = scr_sh.get("FIIs") or scr_sh.get("Foreign Institutions") or []
-    dii_scr = scr_sh.get("DIIs") or scr_sh.get("Domestic Institutions") or []
+    promoter_scr = (
+        scr_sh.get("Promoters") or scr_sh.get("Promoter & Promoter Group") or
+        scr_sh.get("Promoter and Promoter Group") or []
+    )
+    fii_scr = (
+        scr_sh.get("FIIs") or scr_sh.get("Foreign Institutional Investors") or
+        scr_sh.get("Foreign Institutions") or []
+    )
+    dii_scr = (
+        scr_sh.get("DIIs") or scr_sh.get("Domestic Institutional Investors") or
+        scr_sh.get("Domestic Institutions") or []
+    )
+    # If NSE/Tickertape records are empty, build trend from Screener data
+    if not records and sh_headers and promoter_scr:
+        records = [
+            {
+                "period": sh_headers[i],
+                "promoter_pct": promoter_scr[i] if i < len(promoter_scr) else None,
+                "fii_pct": fii_scr[i] if i < len(fii_scr) else None,
+                "dii_pct": dii_scr[i] if i < len(dii_scr) else None,
+                "public_pct": None,
+                "promoter_pledged_pct": None,
+            }
+            for i in range(len(sh_headers))
+        ]
+        trend = _cc.build_shareholding_trend(records)
 
     return {
         "symbol": symbol,

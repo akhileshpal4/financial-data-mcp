@@ -72,7 +72,12 @@ class NewsFetcher:
         try:
             resp = await self._client.get(url)
             resp.raise_for_status()
-            return resp.text
+            # Respect the server's declared encoding; fall back to utf-8 with replacement
+            encoding = resp.encoding or "utf-8"
+            try:
+                return resp.content.decode(encoding)
+            except (UnicodeDecodeError, LookupError):
+                return resp.content.decode("utf-8", errors="replace")
         except Exception as exc:
             logger.debug("News GET %s failed: %s", url, exc)
             return None
