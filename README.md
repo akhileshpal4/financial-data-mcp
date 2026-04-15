@@ -31,24 +31,10 @@ One call to `fetch_full_analysis` returns:
 
 ## Installation
 
-### Option A — pip (recommended)
-
 ```bash
-pip install financial-data-mcp
-```
-
-### Option B — clone & run
-
-```bash
-git clone https://github.com/<your-username>/financial-data-mcp.git
+git clone https://github.com/akhileshpal4/financial-data-mcp.git
 cd financial-data-mcp
 pip install -r requirements.txt
-```
-
-### Option C — uvx (no install)
-
-```bash
-uvx financial-data-mcp
 ```
 
 ---
@@ -57,20 +43,6 @@ uvx financial-data-mcp
 
 Open `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows) and add:
 
-**If installed via pip:**
-```json
-{
-  "mcpServers": {
-    "financial-data": {
-      "command": "financial-data-mcp",
-      "args": [],
-      "env": {}
-    }
-  }
-}
-```
-
-**If cloned:**
 ```json
 {
   "mcpServers": {
@@ -96,8 +68,8 @@ Add to your `.vscode/mcp.json` or user-level MCP settings:
   "servers": {
     "financial-data": {
       "type": "stdio",
-      "command": "financial-data-mcp",
-      "args": []
+      "command": "python",
+      "args": ["/absolute/path/to/financial-data-mcp/server.py"]
     }
   }
 }
