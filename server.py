@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any
 
 import mcp.types as types
-from mcp.server import Server
+from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 
@@ -879,7 +879,7 @@ async def main() -> None:
                 server_name="financial-data-mcp",
                 server_version="1.0.0",
                 capabilities=server.get_capabilities(
-                    notification_options=None,
+                    notification_options=NotificationOptions(),
                     experimental_capabilities={},
                 ),
             ),
