@@ -39,6 +39,14 @@ def _to_float(text: str) -> float | None:
         return None
 
 
+def _clean_text(text: str | None) -> str | None:
+    """Strip whitespace and return None for empty strings."""
+    if not text:
+        return None
+    cleaned = re.sub(r"\s+", " ", str(text).strip())
+    return cleaned if cleaned else None
+
+
 def _parse_table(table_el) -> dict[str, list]:
     """
     Parse a Screener financial table into {row_label: [v1, v2, ...]} dict.
@@ -265,6 +273,138 @@ class ScreenerFetcher:
             if peer:
                 peers.append(peer)
         return peers[:6] if peers else None
+
+    async def get_industry_avg(
+        self, symbol: str, consolidated: bool = True
+    ) -> dict[str, Any]:
+        """
+        Fetch sector / industry average P/E, P/B, and EV/EBITDA from Screener.in.
+
+        Strategy:
+          1. Fetch the company page and look for a link to the Screener
+             industry / screen page (href contains '/screens/').
+          2. Parse the peer table on that page and compute the *median* value
+             across all listed companies.
+          3. Fall back to None values (caller will derive from peers list).
+
+        Returns a dict with keys:
+          symbol, industry_name, industry_pe_avg, industry_pb_avg,
+          industry_ev_ebitda_avg, sample_size, source
+        """
+        _empty: dict[str, Any] = {
+            "symbol": symbol,
+            "source": "Screener.in",
+            "industry_name": None,
+            "industry_pe_avg": None,
+            "industry_pb_avg": None,
+            "industry_ev_ebitda_avg": None,
+            "sample_size": 0,
+        }
+
+        soup = await self._fetch_page(symbol, consolidated)
+        if soup is None:
+            return _empty
+
+        # Extract industry name and link from company-info section
+        industry_name: str | None = None
+        industry_url: str | None = None
+
+        for a in soup.find_all("a", href=True):
+            href: str = a["href"]
+            if "/screens/" in href or "/screen/" in href:
+                industry_name = _clean_text(a.get_text(strip=True))
+                industry_url = (
+                    BASE_URL + href if href.startswith("/") else href
+                )
+                break
+
+        if not industry_name:
+            # Try company-info spans (sector / industry labels)
+            for el in soup.select(
+                ".company-info a, .company-ratios a, "
+                "[data-field='industry'] a, [class*='info'] a"
+            ):
+                href = el.get("href", "")
+                if "/screens/" in href or "/screen/" in href:
+                    industry_name = _clean_text(el.get_text(strip=True))
+                    industry_url = (
+                        BASE_URL + href if href.startswith("/") else href
+                    )
+                    break
+
+        if not industry_url:
+            return {**_empty, "industry_name": industry_name}
+
+        try:
+            resp = await self._client.get(industry_url)
+            resp.raise_for_status()
+            ind_soup = BeautifulSoup(resp.text, "lxml")
+        except Exception as exc:
+            logger.debug(
+                "Screener industry page fetch failed for %s: %s", symbol, exc
+            )
+            return {**_empty, "industry_name": industry_name}
+
+        table = ind_soup.find("table")
+        if not table:
+            return {**_empty, "industry_name": industry_name}
+
+        header_row = table.find("tr")
+        headers = (
+            [th.get_text(strip=True).upper() for th in header_row.find_all(["th", "td"])]
+            if header_row
+            else []
+        )
+
+        def _col(patterns: list[str]) -> int | None:
+            for pat in patterns:
+                for i, h in enumerate(headers):
+                    if pat in h:
+                        return i
+            return None
+
+        pe_idx = _col(["P/E", "PE RATIO", "PRICE/EARNING"])
+        pb_idx = _col(["P/B", "PB RATIO", "PRICE/BOOK", "PRICE TO BOOK"])
+        ev_idx = _col(["EV/EBITDA", "EV / EBITDA", "EV_EBITDA"])
+
+        pe_vals: list[float] = []
+        pb_vals: list[float] = []
+        ev_vals: list[float] = []
+
+        for row in table.find_all("tr")[1:]:
+            cells = row.find_all(["th", "td"])
+            if pe_idx is not None and pe_idx < len(cells):
+                v = _to_float(cells[pe_idx].get_text(strip=True))
+                if v and 0 < v < 500:
+                    pe_vals.append(v)
+            if pb_idx is not None and pb_idx < len(cells):
+                v = _to_float(cells[pb_idx].get_text(strip=True))
+                if v and 0 < v < 200:
+                    pb_vals.append(v)
+            if ev_idx is not None and ev_idx < len(cells):
+                v = _to_float(cells[ev_idx].get_text(strip=True))
+                if v and 0 < v < 500:
+                    ev_vals.append(v)
+
+        def _median(lst: list[float]) -> float | None:
+            if not lst:
+                return None
+            s = sorted(lst)
+            n = len(s)
+            return round(
+                s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2, 2
+            )
+
+        return {
+            "symbol": symbol,
+            "source": "Screener.in",
+            "industry_url": industry_url,
+            "industry_name": industry_name,
+            "industry_pe_avg": _median(pe_vals),
+            "industry_pb_avg": _median(pb_vals),
+            "industry_ev_ebitda_avg": _median(ev_vals),
+            "sample_size": max(len(pe_vals), len(pb_vals), len(ev_vals)),
+        }
 
     def invalidate_cache(self, symbol: str | None = None) -> None:
         if symbol:

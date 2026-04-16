@@ -94,6 +94,8 @@ Add to your `.vscode/mcp.json` or user-level MCP settings:
 | `fetch_shareholding_pattern` | Promoter/FII/DII + pledging alert |
 | `fetch_peer_comparison` | 3 peers side-by-side |
 | `fetch_recent_news` | Top 5 long-term–relevant news |
+| `fetch_sector_averages` | Sector / industry average P/E, P/B, and EV/EBITDA for valuation comparison |
+| `web_search_stock_info` | Web search (DuckDuckGo + Google News RSS) for qualitative stock info — moat, sector context, regulatory risks, earnings call, governance, or custom query |
 
 **Example usage in Claude:**
 ```

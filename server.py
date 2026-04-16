@@ -26,6 +26,7 @@ from fetchers.bse import BSEFetcher
 from fetchers.screener import ScreenerFetcher
 from fetchers.tickertape import TickertapeFetcher
 from fetchers.news import NewsFetcher
+from fetchers.web_search import WebSearchFetcher
 from utils.cross_check import CrossChecker
 from utils.calculator import FinancialCalculator
 
@@ -43,6 +44,7 @@ _bse: BSEFetcher | None = None
 _screener: ScreenerFetcher | None = None
 _tickertape: TickertapeFetcher | None = None
 _news: NewsFetcher | None = None
+_web_search: WebSearchFetcher | None = None
 _cc = CrossChecker()
 _calc = FinancialCalculator()
 
@@ -80,6 +82,13 @@ def news_fetcher() -> NewsFetcher:
     if _news is None:
         _news = NewsFetcher()
     return _news
+
+
+def web_search_fetcher() -> WebSearchFetcher:
+    global _web_search
+    if _web_search is None:
+        _web_search = WebSearchFetcher()
+    return _web_search
 
 
 # --------------------------------------------------------------------------- #
@@ -287,6 +296,92 @@ TOOLS: list[types.Tool] = [
                 },
             },
             "required": ["symbol"],
+        },
+    ),
+    types.Tool(
+        name="fetch_sector_averages",
+        description=(
+            "Fetch sector / industry average P/E, P/B, and EV/EBITDA from "
+            "Screener.in for use in valuation comparison (Step 3 of the "
+            "Indian Stock Analyzer). Returns:\n"
+            "  • sector_pe_avg  — from NSE sector P/E field\n"
+            "  • sector_pb_avg  — from Screener industry screen (median), "
+            "falls back to peer-derived median\n"
+            "  • sector_ev_ebitda_avg — same source/fallback as P/B\n"
+            "Call this alongside fetch_full_analysis for complete valuation "
+            "context."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "NSE stock symbol e.g. RELIANCE, TCS, HDFCBANK",
+                },
+                "consolidated": {
+                    "type": "boolean",
+                    "description": "Use consolidated financials (default true)",
+                },
+            },
+            "required": ["symbol"],
+        },
+    ),
+    types.Tool(
+        name="web_search_stock_info",
+        description=(
+            "Search the web (DuckDuckGo + Google News RSS) for qualitative "
+            "information about an Indian stock that structured data sources "
+            "do not provide.  Use 'query_type' to select the search mode:\n"
+            "  'moat'            — competitive moat, pricing power, brand, "
+            "market share\n"
+            "  'sector_context'  — sector tailwinds / headwinds, "
+            "5–10 year outlook\n"
+            "  'regulatory_risks'— SEBI, RBI, government policy risks\n"
+            "  'earnings_call'   — latest earnings call transcript, "
+            "management commentary\n"
+            "  'governance'      — governance flags, SEBI actions, "
+            "controversies\n"
+            "  'custom'          — ad-hoc search using the 'query' field\n"
+            "Returns a list of search results with title, snippet, url, "
+            "source, and published date."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "NSE stock symbol",
+                },
+                "company_name": {
+                    "type": "string",
+                    "description": "Full company name for richer search queries",
+                },
+                "sector": {
+                    "type": "string",
+                    "description": "Sector / industry name",
+                },
+                "query_type": {
+                    "type": "string",
+                    "enum": [
+                        "moat",
+                        "sector_context",
+                        "regulatory_risks",
+                        "earnings_call",
+                        "governance",
+                        "custom",
+                    ],
+                    "description": "Type of qualitative research to perform",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Custom query string (only used when query_type='custom')",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "description": "Maximum results to return (default 5)",
+                },
+            },
+            "required": ["symbol", "query_type"],
         },
     ),
 ]
@@ -851,6 +946,115 @@ async def _full_analysis(symbol: str, consolidated: bool) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+#  New tool implementations: sector averages + web search                       #
+# --------------------------------------------------------------------------- #
+
+def _to_float_safe(v: Any) -> float | None:
+    """Safely cast any value to float; return None on failure."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _sector_averages(symbol: str, consolidated: bool) -> dict[str, Any]:
+    """
+    Fetch sector P/E from NSE + industry P/B and EV/EBITDA from Screener.
+    Falls back to computing medians from the peer comparison list when
+    the Screener industry page is not parseable.
+    """
+    nse_quote, industry_avg, peers = await asyncio.gather(
+        nse().get_quote(symbol),
+        screener().get_industry_avg(symbol, consolidated),
+        screener().get_peers(symbol),
+        return_exceptions=True,
+    )
+    nse_quote = nse_quote if isinstance(nse_quote, dict) else {}
+    industry_avg = industry_avg if isinstance(industry_avg, dict) else {}
+    peers = peers if isinstance(peers, list) else []
+
+    sector_pe = nse_quote.get("sector_pe")
+    industry_pb = industry_avg.get("industry_pb_avg")
+    industry_ev_ebitda = industry_avg.get("industry_ev_ebitda_avg")
+
+    # Fallback: derive missing sector P/B / EV/EBITDA from peer medians
+    if (industry_pb is None or industry_ev_ebitda is None) and peers:
+        pb_raw = [
+            _to_float_safe(
+                p.get("P/B") or p.get("pb") or p.get("Price to Book")
+                or p.get("Price / Book")
+            )
+            for p in peers
+        ]
+        pb_vals = [v for v in pb_raw if v and 0 < v < 200]
+
+        ev_raw = [
+            _to_float_safe(
+                p.get("EV/EBITDA") or p.get("ev_ebitda") or p.get("EV / EBITDA")
+            )
+            for p in peers
+        ]
+        ev_vals = [v for v in ev_raw if v and 0 < v < 500]
+
+        def _median(lst: list) -> float | None:
+            if not lst:
+                return None
+            s = sorted(lst)
+            n = len(s)
+            return round(
+                s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2, 2
+            )
+
+        if industry_pb is None:
+            industry_pb = _median(pb_vals)
+        if industry_ev_ebitda is None:
+            industry_ev_ebitda = _median(ev_vals)
+
+    return {
+        "symbol": symbol,
+        "sector": nse_quote.get("sector"),
+        "sector_pe_avg": sector_pe,
+        "sector_pb_avg": industry_pb,
+        "sector_ev_ebitda_avg": industry_ev_ebitda,
+        "industry_name": industry_avg.get("industry_name"),
+        "source_pe": "NSE",
+        "source_pb_ev": (
+            industry_avg.get("source", "Screener.in (peer-derived)")
+            if industry_avg.get("industry_pe_avg") or industry_avg.get("industry_pb_avg")
+            else "peer-derived median"
+        ),
+        "sample_size": industry_avg.get("sample_size", len(peers)),
+    }
+
+
+async def _web_search_info(
+    symbol: str,
+    company_name: str,
+    sector: str,
+    query_type: str,
+    custom_query: str | None,
+    top_n: int,
+) -> dict[str, Any]:
+    """Route to the correct WebSearchFetcher method based on query_type."""
+    ws = web_search_fetcher()
+    if query_type == "moat":
+        return await ws.get_moat_analysis(symbol, company_name, sector)
+    elif query_type == "sector_context":
+        return await ws.get_sector_context(sector, company_name)
+    elif query_type == "regulatory_risks":
+        return await ws.get_regulatory_risks(sector, company_name)
+    elif query_type == "earnings_call":
+        return await ws.get_earnings_call_highlights(symbol, company_name)
+    elif query_type == "governance":
+        return await ws.get_management_governance_flags(symbol, company_name)
+    else:  # custom
+        q = custom_query or f"{symbol} India stock fundamental analysis"
+        return await ws.search(symbol, q, top_n=top_n)
+
+
+# --------------------------------------------------------------------------- #
 #  MCP handler registration                                                     #
 # --------------------------------------------------------------------------- #
 
@@ -885,6 +1089,15 @@ async def handle_call_tool(
             "fetch_peer_comparison": lambda: _peer_comparison(symbol, consolidated),
             "fetch_recent_news": lambda: _recent_news(symbol),
             "fetch_full_analysis": lambda: _full_analysis(symbol, consolidated),
+            "fetch_sector_averages": lambda: _sector_averages(symbol, consolidated),
+            "web_search_stock_info": lambda: _web_search_info(
+                symbol,
+                args.get("company_name", symbol),
+                args.get("sector", ""),
+                args.get("query_type", "custom"),
+                args.get("query"),
+                int(args.get("top_n", 5)),
+            ),
         }
         if name not in dispatch:
             return [types.TextContent(type="text", text=f'{{"error": "unknown tool: {name}"}}')]
